@@ -228,6 +228,36 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .leaflet-control-zoom{border:1px solid #252525!important;border-radius:10px!important;overflow:hidden;}
 .leaflet-control-zoom a{background:rgba(14,14,14,0.92)!important;color:#aaa!important;border-bottom:1px solid #252525!important;}
 .leaflet-control-zoom a:hover{background:#1e1e1e!important;color:#fff!important;}
+
+/* ── ROUTE PICKER ── */
+#routeOverlay{position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:2000;display:flex;align-items:flex-end;justify-content:center;backdrop-filter:blur(4px);}
+#routeOverlay.hidden{display:none;}
+#routePanel{background:var(--surface);border-radius:20px 20px 0 0;width:100%;max-width:500px;max-height:88vh;display:flex;flex-direction:column;padding-bottom:calc(16px + var(--safe-bottom));animation:slideUp 0.28s cubic-bezier(0.32,0.72,0,1);}
+#routeHandle{width:36px;height:4px;background:#333;border-radius:2px;margin:12px auto 8px;flex-shrink:0;}
+#routePanelTitle{font-family:Playfair Display,serif;font-size:17px;font-weight:700;padding:0 18px 10px;flex-shrink:0;border-bottom:1px solid var(--border);}
+#routePanelTitle span{color:var(--gold);}
+#routeContent{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;}
+#routeContent::-webkit-scrollbar{display:none;}
+.route-dest-row{padding:12px 18px;display:flex;align-items:center;gap:10px;cursor:pointer;border-bottom:1px solid var(--border);transition:background 0.12s;}
+.route-dest-row:active{background:var(--surface2);}
+.route-dest-emoji{font-size:18px;flex-shrink:0;}
+.route-dest-info{flex:1;min-width:0;}
+.route-dest-name{font-size:13px;font-weight:500;color:#ddd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.route-dest-day{font-family:DM Mono,monospace;font-size:10px;color:var(--text3);margin-top:2px;}
+.route-mode-row{padding:14px 18px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border);}
+.route-mode-icon{font-size:22px;flex-shrink:0;width:32px;text-align:center;}
+.route-mode-info{flex:1;}
+.route-mode-name{font-size:13px;font-weight:500;color:#ddd;}
+.route-mode-time{font-family:DM Mono,monospace;font-size:12px;margin-top:3px;}
+.route-mode-note{font-family:DM Mono,monospace;font-size:10px;color:var(--text3);margin-top:2px;}
+.route-select-btn{padding:8px 16px;border-radius:10px;background:var(--gold);border:none;color:#000;font-family:DM Mono,monospace;font-size:11px;font-weight:700;cursor:pointer;flex-shrink:0;}
+.route-select-btn:active{opacity:0.8;}
+.route-loading{padding:40px;text-align:center;font-family:DM Mono,monospace;font-size:12px;color:var(--text3);}
+.route-loading .loading-spinner{margin:0 auto 12px;}
+.route-section-title{padding:10px 18px 6px;font-family:DM Mono,monospace;font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;background:var(--surface2);}
+.route-back-btn{padding:10px 18px;display:flex;align-items:center;gap:8px;font-family:DM Mono,monospace;font-size:11px;color:var(--text2);cursor:pointer;border-bottom:1px solid var(--border);}
+.route-back-btn:active{background:var(--surface2);}
+.route-applied{padding:16px 18px;text-align:center;font-family:DM Mono,monospace;font-size:12px;color:var(--food);}
 </style>
 </head>
 <body>
@@ -289,6 +319,16 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
     <div class="modal"><div class="modal-handle"></div><h3 id="modalTitle"></h3><div id="modalBody"></div><div class="modal-btns" id="modalBtns"></div></div>
   </div>
   <input type="file" id="fileInput" accept="image/*" multiple style="display:none">
+  <!-- ROUTE PICKER -->
+  <div id="routeOverlay" class="hidden" onclick="if(event.target===this)closeRoutePicker()">
+    <div id="routePanel">
+      <div id="routeHandle"></div>
+      <div id="routePanelTitle" style="padding:0 18px 12px;font-family:Playfair Display,serif;font-size:16px;font-weight:700;flex-shrink:0;border-bottom:1px solid var(--border);">
+        Route <span id="routeFromLabel" style="color:var(--gold)"></span> → <span id="routeToLabel" style="color:var(--gold)"></span>
+      </div>
+      <div id="routeContent"></div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -831,10 +871,38 @@ function addFoodToDay(fid,dayId){
 }
 
 function buildPolylines(){
-  Object.values(allPolylines).forEach(function(p){map.removeLayer(p);});allPolylines={};
+  // Remove all old polylines/segments
+  Object.values(allPolylines).forEach(function(arr){
+    if(Array.isArray(arr)){arr.forEach(function(l){map.removeLayer(l);});}
+    else{map.removeLayer(arr);}
+  });
+  allPolylines={};
   days.forEach(function(d){
     var grp=placeData.filter(function(p){return p.day===d.id;});
-    if(grp.length>1) allPolylines[d.id]=L.polyline(grp.map(function(p){return[p.lat,p.lng];}),{color:DAY_COLORS[d.id],weight:2.5,opacity:0.4,dashArray:'6,8'}).addTo(map);
+    if(grp.length<2) return;
+    var color=DAY_COLORS[d.id];
+    var segments=[];
+    for(var i=1;i<grp.length;i++){
+      var from=grp[i-1], to=grp[i];
+      // Create a wider invisible click target on top of the visible line
+      var visLine=L.polyline([[from.lat,from.lng],[to.lat,to.lng]],{
+        color:color, weight:2.5, opacity:0.45, dashArray:'6,8', interactive:false
+      }).addTo(map);
+      var hitLine=L.polyline([[from.lat,from.lng],[to.lat,to.lng]],{
+        color:color, weight:18, opacity:0, interactive:true
+      }).addTo(map);
+      // Closure to capture from/to
+      (function(f,t,c){
+        hitLine.on('click', function(e){
+          L.DomEvent.stopPropagation(e);
+          openRoutePicker(f, t, c);
+        });
+        hitLine.on('mouseover', function(){visLine.setStyle({opacity:0.85, weight:4});});
+        hitLine.on('mouseout',  function(){visLine.setStyle({opacity:0.45, weight:2.5});});
+      })(from, to, color);
+      segments.push(visLine, hitLine);
+    }
+    allPolylines[d.id]=segments;
   });
 }
 
@@ -1144,6 +1212,121 @@ function editDayName(did){
 }
 
 
+
+// ── ROUTE PICKER ─────────────────────────────────────────────────────────────
+
+// Travel time estimates based on straight-line distance
+// Real travel times vary — these are calibrated estimates for London
+var ROUTE_MODES = [
+  {id:'walk',   emoji:'🚶', name:'Walk',       speedKmh:4.5,  costNote:'Free',          note:'On foot'},
+  {id:'cycle',  emoji:'🚲', name:'Cycle',      speedKmh:14,   costNote:'~£2 Santander', note:'Santander bikes'},
+  {id:'tube',   emoji:'🚇', name:'Tube/Rail',  speedKmh:30,   costNote:'~£2-4',         note:'inc. walk to station', overhead:8},
+  {id:'bus',    emoji:'🚌', name:'Bus',        speedKmh:12,   costNote:'£1.75',         note:'inc. wait time',       overhead:5},
+  {id:'taxi',   emoji:'🚕', name:'Taxi/Uber',  speedKmh:22,   costNote:'~£8-25',        note:'depends on traffic',   overhead:3},
+  {id:'boat',   emoji:'⛵', name:'Thames Boat',speedKmh:25,   costNote:'~£6-10',        note:'riverside stops only', overhead:10},
+];
+
+var routeFrom=null, routeTo=null;
+
+function haversineKm(lat1,lng1,lat2,lng2){
+  var R=6371;
+  var dLat=(lat2-lat1)*Math.PI/180;
+  var dLng=(lng2-lng1)*Math.PI/180;
+  var a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)*Math.sin(dLng/2);
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+function estimateTravelMins(distKm, mode){
+  // Add 30% for non-direct routing on London streets
+  var roadDist = distKm * 1.3;
+  var mins = (roadDist / mode.speedKmh) * 60;
+  mins += (mode.overhead || 0); // station/wait overhead
+  return Math.max(2, Math.round(mins));
+}
+
+function openRoutePicker(fromPlace, toPlace, color){
+  routeFrom = fromPlace;
+  routeTo = toPlace;
+  map.closePopup();
+
+  document.getElementById('routeFromLabel').textContent = fromPlace.emoji + ' ' + fromPlace.name;
+  document.getElementById('routeToLabel').textContent = toPlace.emoji + ' ' + toPlace.name;
+
+  var distKm = haversineKm(fromPlace.lat, fromPlace.lng, toPlace.lat, toPlace.lng);
+  var rc = document.getElementById('routeContent');
+  rc.innerHTML = '';
+
+  // Distance info
+  var distRow = document.createElement('div');
+  distRow.style.cssText = 'padding:10px 18px;font-family:DM Mono,monospace;font-size:10px;color:var(--text3);background:var(--surface2);border-bottom:1px solid var(--border);';
+  distRow.textContent = '📍 Straight-line distance: ' + distKm.toFixed(1) + ' km — tap a mode to apply it';
+  rc.appendChild(distRow);
+
+  // Current mode indicator
+  var currentMode = toPlace.transMode || 'Walk';
+  var currentMins = parseInt(toPlace.transMin) || 0;
+  if(currentMins > 0){
+    var curRow = document.createElement('div');
+    curRow.style.cssText = 'padding:8px 18px;font-family:DM Mono,monospace;font-size:10px;color:'+color+';background:'+color+'10;border-bottom:1px solid var(--border);';
+    curRow.innerHTML = '✓ Currently set: ' + modeEmoji(currentMode) + ' ' + currentMode + ' — ' + currentMins + ' min';
+    rc.appendChild(curRow);
+  }
+
+  // Mode rows
+  ROUTE_MODES.forEach(function(mode){
+    var mins = estimateTravelMins(distKm, mode);
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--border);cursor:pointer;transition:background 0.12s;';
+
+    var isActive = (currentMode === mode.name || currentMode === mode.id);
+    if(isActive) row.style.background = color + '12';
+
+    row.innerHTML = '<div style="font-size:24px;width:34px;text-align:center;flex-shrink:0;">' + mode.emoji + '</div>'
+      + '<div style="flex:1;">'
+      + '<div style="font-size:13px;font-weight:500;color:#ddd;">' + mode.name + (isActive ? ' <span style="font-size:10px;color:'+color+';">✓ current</span>' : '') + '</div>'
+      + '<div style="font-family:DM Mono,monospace;font-size:10px;color:var(--text3);margin-top:3px;">' + mode.note + ' &middot; ' + mode.costNote + '</div>'
+      + '</div>'
+      + '<div style="text-align:right;flex-shrink:0;">'
+      + '<div style="font-family:DM Mono,monospace;font-size:16px;font-weight:700;color:' + color + ';">' + mins + '<span style="font-size:10px;font-weight:400;"> min</span></div>'
+      + '<button class="route-select-btn" style="margin-top:5px;background:' + (isActive ? '#555' : color) + ';color:' + (isActive ? '#aaa' : '#000') + ';">Apply</button>'
+      + '</div>';
+
+    (function(m, mn){
+      row.querySelector('.route-select-btn').addEventListener('click', function(e){
+        e.stopPropagation();
+        applyRoute(m, mn);
+      });
+      row.addEventListener('click', function(){applyRoute(m, mn);});
+    })(mode, mins);
+
+    rc.appendChild(row);
+  });
+
+  // Draw preview line on map
+  if(window._routePreviewLine) map.removeLayer(window._routePreviewLine);
+  window._routePreviewLine = L.polyline([[fromPlace.lat,fromPlace.lng],[toPlace.lat,toPlace.lng]],{
+    color: color, weight: 4, opacity: 0.9, dashArray: null
+  }).addTo(map);
+  map.fitBounds([[fromPlace.lat,fromPlace.lng],[toPlace.lat,toPlace.lng]], {padding:[80,120]});
+
+  document.getElementById('routeOverlay').classList.remove('hidden');
+}
+
+function applyRoute(mode, mins){
+  if(!routeTo) return;
+  routeTo.transMode = mode.name;
+  routeTo.transMin = String(mins);
+  closeRoutePicker();
+  rebuild();
+  scheduleSave();
+  showToast(mode.emoji + ' ' + mode.name + ' (' + mins + ' min) applied!');
+}
+
+function closeRoutePicker(){
+  document.getElementById('routeOverlay').classList.add('hidden');
+  if(window._routePreviewLine){map.removeLayer(window._routePreviewLine);window._routePreviewLine=null;}
+  routeFrom=null; routeTo=null;
+}
 
 // ── UTILS ─────────────────────────────────────────────────────────────────────
 function modeEmoji(m){return{Walk:'🚶',Tube:'🚇',Taxi:'🚕',Boat:'⛵',Cycle:'🚲',Bus:'🚌','Tube+Bus':'🚇'}[m]||'🚗';}
